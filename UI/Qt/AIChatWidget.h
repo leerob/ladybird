@@ -37,12 +37,13 @@ private:
     struct PendingComputerCall {
         String call_id;
         JsonObject action;
+        Optional<JsonArray> pending_safety_checks;
     };
 
     void submit_prompt();
     void begin_user_turn(String prompt);
     void request_page_context_and_send_prompt(String prompt);
-    void send_responses_request();
+    void send_responses_request(JsonArray input, Optional<String> previous_response_id);
     void finish_turn();
 
     void append_user_message(StringView message);
@@ -77,10 +78,11 @@ private:
     QPushButton* m_send_button { nullptr };
 
     String m_openai_api_key;
+    String m_openai_model;
     URL::URL m_responses_endpoint;
-    JsonArray m_conversation_history;
+    Optional<String> m_last_response_id;
 
-    RefPtr<Requests::Request> m_active_request;
+    Vector<RefPtr<Requests::Request>> m_active_requests;
     bool m_turn_in_flight { false };
     size_t m_tool_loop_iteration { 0 };
 

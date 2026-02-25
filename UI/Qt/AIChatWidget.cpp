@@ -169,17 +169,21 @@ AIChatWidget::AIChatWidget(BrowserWindow& window, QWidget* parent)
     connect(m_send_button, &QPushButton::clicked, this, &AIChatWidget::submit_prompt);
     connect(m_prompt_input, &QLineEdit::returnPressed, this, &AIChatWidget::submit_prompt);
 
-    if (auto key = Core::Environment::get("AI_GATEWAY_API_KEY"sv); key.has_value())
+    if (auto key = Core::Environment::get("OPENAI_KEY"sv); key.has_value())
         m_openai_api_key = MUST(String::from_utf8(*key));
+    if (auto model = Core::Environment::get("OPENAI_MODEL"sv); model.has_value())
+        m_openai_model = MUST(String::from_utf8(*model));
+    if (m_openai_model.is_empty())
+        m_openai_model = "computer-use-preview"_string;
 
-    auto endpoint = URL::Parser::basic_parse("https://api.anthropic.com/v1/messages"sv);
+    auto endpoint = URL::Parser::basic_parse(Core::Environment::get("OPENAI_RESPONSES_URL"sv).value_or("https://api.openai.com/v1/responses"sv));
     VERIFY(endpoint.has_value());
     m_responses_endpoint = endpoint.release_value();
 
     if (m_openai_api_key.is_empty())
-        append_status_message("AI_GATEWAY_API_KEY is not set; AI chat cannot send requests."sv);
+        append_status_message("OPENAI_KEY is not set; AI chat cannot send requests."sv);
     else
-        append_status_message("AI chat ready. Each prompt includes current page URL, title, and text context."sv);
+        append_status_message(MUST(String::formatted("AI chat ready (model: {}). Each prompt includes current page URL, title, and text context.", m_openai_model)));
 }
 
 AIChatWidget::~AIChatWidget() = default;
@@ -201,13 +205,12 @@ void AIChatWidget::submit_prompt()
 void AIChatWidget::begin_user_turn(String prompt)
 {
     if (m_openai_api_key.is_empty()) {
-        append_status_message("Set AI_GATEWAY_API_KEY in the environment, then restart Ladybird."sv);
+        append_status_message("Set OPENAI_KEY in the environment, then restart Ladybird."sv);
         return;
     }
 
     m_turn_in_flight = true;
     m_tool_loop_iteration = 0;
-    m_conversation_history = JsonArray {};
     set_input_enabled(false);
     request_page_context_and_send_prompt(AK::move(prompt));
 }
@@ -226,19 +229,13 @@ void AIChatWidget::request_page_context_and_send_prompt(String prompt)
 
     view->request_internal_page_info(WebView::PageInfoType::Text)
         ->when_resolved([this, prompt = AK::move(prompt), url = AK::move(url), title = AK::move(title)](String const& page_text) {
-            JsonObject text_content;
-            text_content.set("type"sv, "text"sv);
-            text_content.set("text"sv, build_user_prompt_with_context(prompt, url, title, page_text));
-
-            JsonArray content;
-            content.must_append(AK::move(text_content));
-
             JsonObject message;
             message.set("role"sv, "user"sv);
-            message.set("content"sv, AK::move(content));
+            message.set("content"sv, build_user_prompt_with_context(prompt, url, title, page_text));
 
-            m_conversation_history.must_append(AK::move(message));
-            send_responses_request();
+            JsonArray input;
+            input.must_append(AK::move(message));
+            send_responses_request(AK::move(input), m_last_response_id);
         })
         .when_rejected([this](Error const& error) {
             append_status_message(MUST(String::formatted("Failed to read page context: {}", error)));
@@ -246,42 +243,49 @@ void AIChatWidget::request_page_context_and_send_prompt(String prompt)
         });
 }
 
-void AIChatWidget::send_responses_request()
+void AIChatWidget::send_responses_request(JsonArray input, Optional<String> previous_response_id)
 {
     auto headers = HTTP::HeaderList::create();
-    headers->set(HTTP::Header { "x-api-key"sv, ByteString::formatted("{}", m_openai_api_key) });
-    headers->set(HTTP::Header { "anthropic-version"sv, "2023-06-01"sv });
+    headers->set(HTTP::Header { "Authorization"sv, ByteString::formatted("Bearer {}", m_openai_api_key) });
     headers->set(HTTP::Header { "Content-Type"sv, "application/json"sv });
 
     JsonObject payload;
-    payload.set("model"sv, "claude-3-7-sonnet-20250219"sv);
-    payload.set("max_tokens"sv, 4096);
+    payload.set("model"sv, m_openai_model);
     payload.set("tools"sv, build_tools_payload());
-    payload.set("messages"sv, JsonArray { m_conversation_history });
-    payload.set("system"sv, "You are an AI assistant in Ladybird. Use computer tool calls to interact with the active webpage when necessary, and explain briefly what you are doing."sv);
+    payload.set("truncation"sv, "auto"sv);
+    payload.set("input"sv, AK::move(input));
+    payload.set("instructions"sv, "You are an AI assistant in Ladybird. Use computer tool calls to interact with the active webpage when necessary, and explain briefly what you are doing."sv);
+    if (previous_response_id.has_value())
+        payload.set("previous_response_id"sv, *previous_response_id);
 
     auto payload_body = payload.serialized();
     auto request = WebView::Application::request_server_client().start_request("POST"sv, m_responses_endpoint, *headers, payload_body.bytes());
     if (!request) {
-        append_status_message("Unable to start AI request."sv);
+        append_status_message("Unable to start OpenAI request."sv);
         finish_turn();
         return;
     }
 
-    m_active_request = request.release_nonnull();
-    m_active_request->set_buffered_request_finished_callback(
-        [this](u64, Requests::RequestTimingInfo const&, Optional<Requests::NetworkError> const& network_error, HTTP::HeaderList const&, Optional<u32> response_code, Optional<String> const& reason_phrase, ReadonlyBytes payload_bytes) {
-            Core::deferred_invoke([this]() { m_active_request.clear(); });
+    auto request_ref = request.release_nonnull();
+    auto request_id = request_ref->id();
+    m_active_requests.append(request_ref);
+    request_ref->set_buffered_request_finished_callback(
+        [this, request_id](u64, Requests::RequestTimingInfo const&, Optional<Requests::NetworkError> const& network_error, HTTP::HeaderList const&, Optional<u32> response_code, Optional<String> const& reason_phrase, ReadonlyBytes payload_bytes) {
+            Core::deferred_invoke([this, request_id]() {
+                m_active_requests.remove_all_matching([request_id](auto const& active_request) {
+                    return active_request && active_request->id() == request_id;
+                });
+            });
 
             if (network_error.has_value()) {
-                append_status_message(MUST(String::formatted("AI request failed: {}", Requests::network_error_to_string(*network_error))));
+                append_status_message(MUST(String::formatted("OpenAI request failed: {}", Requests::network_error_to_string(*network_error))));
                 finish_turn();
                 return;
             }
 
             auto payload_or_error = String::from_utf8(payload_bytes);
             if (payload_or_error.is_error()) {
-                append_status_message("AI returned a non-UTF8 payload."sv);
+                append_status_message("OpenAI returned a non-UTF8 payload."sv);
                 finish_turn();
                 return;
             }
@@ -292,13 +296,15 @@ void AIChatWidget::send_responses_request()
                 if (!payload.is_empty())
                     payload_suffix = MUST(String::formatted("\n{}", payload));
 
-                append_status_message(MUST(String::formatted("AI returned HTTP {}: {}{}", *response_code, reason_phrase.value_or(""_string), payload_suffix)));
+                append_status_message(MUST(String::formatted("OpenAI returned HTTP {}: {}{}", *response_code, reason_phrase.value_or(""_string), payload_suffix)));
+                if (*response_code == 404 && payload.contains("model_not_found"sv))
+                    append_status_message("Tip: set OPENAI_MODEL to a model your account can access."sv);
                 finish_turn();
                 return;
             }
 
             if (auto result = handle_responses_payload(payload); result.is_error()) {
-                append_status_message(MUST(String::formatted("Could not parse AI response: {}", result.error())));
+                append_status_message(MUST(String::formatted("Could not parse OpenAI response: {}", result.error())));
                 finish_turn();
             }
         });
@@ -347,13 +353,12 @@ String AIChatWidget::build_user_prompt_with_context(StringView prompt, URL::URL 
 JsonArray AIChatWidget::build_tools_payload() const
 {
     JsonObject tool;
-    tool.set("type"sv, "computer_20241022"sv);
-    tool.set("name"sv, "computer"sv);
+    tool.set("type"sv, "computer_use_preview"sv);
+    tool.set("environment"sv, "browser"sv);
 
     auto* view = current_view();
-    tool.set("display_width_px"sv, view ? std::max(1, view->width()) : 1024);
-    tool.set("display_height_px"sv, view ? std::max(1, view->height()) : 768);
-    tool.set("display_number"sv, 1);
+    tool.set("display_width"sv, view ? std::max(1, view->width()) : 1024);
+    tool.set("display_height"sv, view ? std::max(1, view->height()) : 768);
 
     JsonArray tools;
     tools.must_append(AK::move(tool));
@@ -362,28 +367,45 @@ JsonArray AIChatWidget::build_tools_payload() const
 
 String AIChatWidget::extract_assistant_text(JsonObject const& response) const
 {
+    if (auto output_text = response.get_string("output_text"sv); output_text.has_value() && !output_text->is_empty())
+        return *output_text;
+
     StringBuilder builder;
 
-    auto content = response.get_array("content"sv);
-    if (!content.has_value())
+    auto output = response.get_array("output"sv);
+    if (!output.has_value())
         return {};
 
-    content->for_each([&](JsonValue const& content_item) {
-        if (!content_item.is_object())
+    output->for_each([&](JsonValue const& item) {
+        if (!item.is_object())
             return;
 
-        auto const& content_object = content_item.as_object();
-        auto content_type = content_object.get_string("type"sv);
-        if (!content_type.has_value() || *content_type != "text"sv)
+        auto const& object = item.as_object();
+        auto type = object.get_string("type"sv);
+        if (!type.has_value() || *type != "message"sv)
             return;
 
-        auto text = content_object.get_string("text"sv);
-        if (!text.has_value() || text->is_empty())
+        auto content = object.get_array("content"sv);
+        if (!content.has_value())
             return;
 
-        if (!builder.is_empty())
-            builder.append("\n\n"sv);
-        builder.append(*text);
+        content->for_each([&](JsonValue const& content_item) {
+            if (!content_item.is_object())
+                return;
+
+            auto const& content_object = content_item.as_object();
+            auto content_type = content_object.get_string("type"sv);
+            if (!content_type.has_value() || *content_type != "output_text"sv)
+                return;
+
+            auto text = content_object.get_string("text"sv);
+            if (!text.has_value() || text->is_empty())
+                return;
+
+            if (!builder.is_empty())
+                builder.append("\n\n"sv);
+            builder.append(*text);
+        });
     });
 
     return MUST(builder.to_string());
@@ -393,31 +415,29 @@ Vector<AIChatWidget::PendingComputerCall> AIChatWidget::extract_computer_calls(J
 {
     Vector<PendingComputerCall> calls;
 
-    auto content = response.get_array("content"sv);
-    if (!content.has_value())
+    auto output = response.get_array("output"sv);
+    if (!output.has_value())
         return calls;
 
-    content->for_each([&](JsonValue const& item) {
+    output->for_each([&](JsonValue const& item) {
         if (!item.is_object())
             return;
 
         auto const& object = item.as_object();
         auto type = object.get_string("type"sv);
-        if (!type.has_value() || *type != "tool_use"sv)
+        if (!type.has_value() || *type != "computer_call"sv)
             return;
 
-        auto call_id = object.get_string("id"sv);
-        auto name = object.get_string("name"sv);
-        auto input = object.get_object("input"sv);
-        if (!call_id.has_value() || !name.has_value() || !input.has_value())
-            return;
-
-        if (*name != "computer"sv)
+        auto call_id = object.get_string("call_id"sv);
+        auto action = object.get_object("action"sv);
+        if (!call_id.has_value() || !action.has_value())
             return;
 
         PendingComputerCall call;
         call.call_id = *call_id;
-        call.action = JsonObject { *input };
+        call.action = JsonObject { *action };
+        if (auto checks = object.get_array("pending_safety_checks"sv); checks.has_value())
+            call.pending_safety_checks = JsonArray { *checks };
         calls.append(AK::move(call));
     });
 
@@ -436,8 +456,9 @@ ErrorOr<void> AIChatWidget::handle_responses_payload(StringView payload)
 
 void AIChatWidget::handle_responses_json(JsonObject const& response)
 {
-    // Add assistant's response to conversation history
-    m_conversation_history.must_append(JsonValue { response });
+    auto response_id = response.get_string("id"sv);
+    if (response_id.has_value())
+        m_last_response_id = *response_id;
 
     auto text = extract_assistant_text(response);
     if (!text.is_empty())
@@ -467,45 +488,32 @@ void AIChatWidget::handle_responses_json(JsonObject const& response)
         tool_results.must_append(output.release_value());
     }
 
-    // Add tool results as a user message
-    JsonObject tool_message;
-    tool_message.set("role"sv, "user"sv);
-    tool_message.set("content"sv, AK::move(tool_results));
-    m_conversation_history.must_append(AK::move(tool_message));
+    if (!response_id.has_value()) {
+        append_status_message("OpenAI response is missing an id for follow-up tool output."sv);
+        finish_turn();
+        return;
+    }
 
-    send_responses_request();
+    send_responses_request(AK::move(tool_results), *response_id);
 }
 
 ErrorOr<JsonObject> AIChatWidget::build_computer_call_output(PendingComputerCall const& call)
 {
     auto screenshot_data_url = TRY(execute_computer_action_and_capture(call));
 
-    JsonObject result_content;
-    result_content.set("type"sv, "tool_result"sv);
-    result_content.set("tool_use_id"sv, call.call_id);
+    JsonObject output_item;
+    output_item.set("type"sv, "computer_call_output"sv);
+    output_item.set("call_id"sv, call.call_id);
 
-    // For computer tool, return base64 image
-    JsonObject image_source;
-    image_source.set("type"sv, "base64"sv);
-    image_source.set("media_type"sv, "image/png"sv);
-    
-    // Extract just the base64 data from the data URL
-    auto data_url_view = screenshot_data_url.bytes_as_string_view();
-    auto base64_start = data_url_view.find("base64,"sv);
-    if (!base64_start.has_value())
-        return Error::from_string_literal("Invalid data URL format");
-    auto base64_data = data_url_view.substring_view(base64_start.value() + 7);
-    image_source.set("data"sv, base64_data);
+    JsonObject output;
+    output.set("type"sv, "input_image"sv);
+    output.set("image_url"sv, screenshot_data_url);
+    output_item.set("output"sv, AK::move(output));
 
-    JsonObject image_content;
-    image_content.set("type"sv, "image"sv);
-    image_content.set("source"sv, AK::move(image_source));
+    if (call.pending_safety_checks.has_value() && !call.pending_safety_checks->is_empty())
+        output_item.set("acknowledged_safety_checks"sv, *call.pending_safety_checks);
 
-    JsonArray content;
-    content.must_append(AK::move(image_content));
-    result_content.set("content"sv, AK::move(content));
-
-    return result_content;
+    return output_item;
 }
 
 ErrorOr<String> AIChatWidget::execute_computer_action_and_capture(PendingComputerCall const& call)
