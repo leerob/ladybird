@@ -1,0 +1,9 @@
+h moves left: true
+l moves right: true
+j moves down: true
+k moves up: true
+ctrl+d moves down: true
+ctrl+u moves up: true
+g then j does not jump top: true
+gg goes top: true
+G goes bottom: true

@@ -1580,6 +1580,9 @@ EventResult EventHandler::handle_keydown(UIEvents::KeyCode key, u32 modifiers, u
     if (!m_navigable->active_document()->is_fully_active())
         return EventResult::Dropped;
 
+    auto const had_pending_vim_g = m_waiting_for_second_vim_g;
+    m_waiting_for_second_vim_g = false;
+
     auto dispatch_result = fire_keyboard_event(UIEvents::EventNames::keydown, m_navigable, key, modifiers, code_point, repeat);
     if (dispatch_result != EventResult::Accepted)
         return dispatch_result;
@@ -1597,6 +1600,7 @@ EventResult EventHandler::handle_keydown(UIEvents::KeyCode key, u32 modifiers, u
     }
 
     GC::Ref<DOM::Document> document = *m_navigable->active_document();
+    auto const significant_modifiers = modifiers & ~UIEvents::Mod_Keypad;
 
     if (!(modifiers & UIEvents::KeyModifier::Mod_Ctrl)) {
         if (key == UIEvents::KeyCode::Key_Tab) {
@@ -1693,8 +1697,6 @@ EventResult EventHandler::handle_keydown(UIEvents::KeyCode key, u32 modifiers, u
             return EventResult::Handled;
         }
 
-        // Ignore Mod_Keypad when determining behavior - it only indicates key location (numpad vs standard).
-        auto const significant_modifiers = modifiers & ~UIEvents::Mod_Keypad;
         if (key == UIEvents::KeyCode::Key_Return && (significant_modifiers == UIEvents::Mod_None || significant_modifiers == UIEvents::Mod_Shift)) {
             auto input_type = significant_modifiers == UIEvents::Mod_Shift ? UIEvents::InputTypes::insertLineBreak : UIEvents::InputTypes::insertParagraph;
 
@@ -1747,6 +1749,64 @@ EventResult EventHandler::handle_keydown(UIEvents::KeyCode key, u32 modifiers, u
     // FIXME: Implement scroll by line and by page instead of approximating the behavior of other browsers.
     auto arrow_key_scroll_distance = 100;
     auto page_scroll_distance = document->window()->inner_height() - (document->window()->outer_height() - document->window()->inner_height());
+    auto half_page_scroll_distance = page_scroll_distance > 2 ? page_scroll_distance / 2 : 1;
+
+    // Vim-inspired viewport and history controls:
+    // h/j/k/l to scroll, H/L for history navigation, gg/G for top/bottom, and Ctrl+d/u for half-page movement.
+    if (significant_modifiers == UIEvents::Mod_None) {
+        switch (key) {
+        case UIEvents::KeyCode::Key_H:
+            document->window()->scroll_by(-arrow_key_scroll_distance, 0);
+            return EventResult::Handled;
+        case UIEvents::KeyCode::Key_J:
+            document->window()->scroll_by(0, arrow_key_scroll_distance);
+            return EventResult::Handled;
+        case UIEvents::KeyCode::Key_K:
+            document->window()->scroll_by(0, -arrow_key_scroll_distance);
+            return EventResult::Handled;
+        case UIEvents::KeyCode::Key_L:
+            document->window()->scroll_by(arrow_key_scroll_distance, 0);
+            return EventResult::Handled;
+        case UIEvents::KeyCode::Key_G:
+            if (repeat)
+                break;
+            if (had_pending_vim_g) {
+                document->scroll_to_the_beginning_of_the_document();
+                return EventResult::Handled;
+            }
+            m_waiting_for_second_vim_g = true;
+            return EventResult::Handled;
+        default:
+            break;
+        }
+    }
+
+    if (significant_modifiers == UIEvents::Mod_Shift) {
+        switch (key) {
+        case UIEvents::KeyCode::Key_H:
+            document->page().traverse_the_history_by_delta(-1);
+            return EventResult::Handled;
+        case UIEvents::KeyCode::Key_L:
+            document->page().traverse_the_history_by_delta(1);
+            return EventResult::Handled;
+        case UIEvents::KeyCode::Key_G:
+            document->window()->scroll_by(0, INT64_MAX);
+            return EventResult::Handled;
+        default:
+            break;
+        }
+    }
+
+    if (significant_modifiers == UIEvents::Mod_PlatformCtrl) {
+        if (key == UIEvents::KeyCode::Key_D) {
+            document->window()->scroll_by(0, half_page_scroll_distance);
+            return EventResult::Handled;
+        }
+        if (key == UIEvents::KeyCode::Key_U) {
+            document->window()->scroll_by(0, -half_page_scroll_distance);
+            return EventResult::Handled;
+        }
+    }
 
     switch (key) {
     case UIEvents::KeyCode::Key_Up:

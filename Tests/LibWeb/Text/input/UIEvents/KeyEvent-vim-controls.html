@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<style>
+    html,
+    body {
+        margin: 0;
+    }
+
+    #spacer {
+        width: 5000px;
+        height: 5000px;
+    }
+</style>
+<div id="spacer"></div>
+<script src="../include.js"></script>
+<script>
+    test(() => {
+        const page = document.body;
+        const modPlatformCtrl = navigator.platform.includes("Mac") ? 1 << 3 : 1 << 1;
+        const modShift = 1 << 2;
+
+        window.scrollTo(400, 400);
+        internals.sendKey(page, "H");
+        println(`h moves left: ${window.scrollX < 400}`);
+
+        const afterH = window.scrollX;
+        internals.sendKey(page, "L");
+        println(`l moves right: ${window.scrollX > afterH}`);
+
+        const afterL = window.scrollY;
+        internals.sendKey(page, "J");
+        println(`j moves down: ${window.scrollY > afterL}`);
+
+        const afterJ = window.scrollY;
+        internals.sendKey(page, "K");
+        println(`k moves up: ${window.scrollY < afterJ}`);
+
+        const afterK = window.scrollY;
+        internals.sendKey(page, "D", modPlatformCtrl);
+        println(`ctrl+d moves down: ${window.scrollY > afterK}`);
+
+        const afterCtrlD = window.scrollY;
+        internals.sendKey(page, "U", modPlatformCtrl);
+        println(`ctrl+u moves up: ${window.scrollY < afterCtrlD}`);
+
+        window.scrollTo(0, 600);
+        internals.sendKey(page, "G");
+        internals.sendKey(page, "J");
+        println(`g then j does not jump top: ${window.scrollY > 600}`);
+
+        window.scrollTo(0, 800);
+        internals.sendKey(page, "G");
+        internals.sendKey(page, "G");
+        println(`gg goes top: ${window.scrollY === 0}`);
+
+        window.scrollTo(0, 0);
+        internals.sendKey(page, "G", modShift);
+        println(`G goes bottom: ${window.scrollY > 0}`);
+    });
+</script>
