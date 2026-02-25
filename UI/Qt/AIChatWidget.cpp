@@ -172,7 +172,7 @@ AIChatWidget::AIChatWidget(BrowserWindow& window, QWidget* parent)
     if (auto key = Core::Environment::get("AI_GATEWAY_API_KEY"sv); key.has_value())
         m_openai_api_key = MUST(String::from_utf8(*key));
 
-    auto endpoint = URL::Parser::basic_parse("https://gateway.ai.cloudflare.com/v1/50e2a8f0e85dd05d05f7b63cef2c94ef/cursor/anthropic/v1/messages"sv);
+    auto endpoint = URL::Parser::basic_parse("https://api.anthropic.com/v1/messages"sv);
     VERIFY(endpoint.has_value());
     m_responses_endpoint = endpoint.release_value();
 
