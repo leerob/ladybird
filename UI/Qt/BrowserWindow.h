@@ -21,12 +21,14 @@
 #include <QToolBar>
 
 class QPropertyAnimation;
+class QDockWidget;
 
 namespace Ladybird {
 
 class Tab;
 class WebContentView;
 class BrowserWindow;
+class AIChatWidget;
 
 class ExitFullscreenButton : public QPushButton {
     Q_OBJECT
@@ -171,8 +173,12 @@ private:
     QAction* m_new_tab_action { nullptr };
     QAction* m_new_window_action { nullptr };
     QAction* m_find_in_page_action { nullptr };
+    QAction* m_toggle_ai_chat_action { nullptr };
 
     IsPopupWindow m_is_popup_window { IsPopupWindow::No };
+
+    QDockWidget* m_ai_chat_dock { nullptr };
+    AIChatWidget* m_ai_chat_widget { nullptr };
 
     ExitFullscreenButton* m_exit_button { nullptr };
     FullscreenMode* m_fullscreen_mode { nullptr };
