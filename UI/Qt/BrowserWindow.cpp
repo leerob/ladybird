@@ -12,6 +12,7 @@
 #include <AK/RefPtr.h>
 #include <AK/TypeCasts.h>
 #include <LibWebView/Application.h>
+#include <UI/Qt/AIChatWidget.h>
 #include <UI/Qt/Application.h>
 #include <UI/Qt/BrowserWindow.h>
 #include <UI/Qt/Icon.h>
@@ -23,6 +24,7 @@
 
 #include <QAction>
 #include <QActionGroup>
+#include <QDockWidget>
 #include <QGuiApplication>
 #include <QInputDialog>
 #include <QMessageBox>
@@ -315,6 +317,11 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, IsPopupWindow
         Settings::the()->set_show_menubar(checked);
     });
 
+    m_toggle_ai_chat_action = new QAction("Show &AI Chat", this);
+    m_toggle_ai_chat_action->setCheckable(true);
+    m_toggle_ai_chat_action->setChecked(true);
+    view_menu->addAction(m_toggle_ai_chat_action);
+
     auto* inspect_menu = create_application_menu(*m_hamburger_menu, Application::the().inspect_menu());
     m_hamburger_menu->addMenu(inspect_menu);
     menuBar()->addMenu(inspect_menu);
@@ -394,6 +401,24 @@ BrowserWindow::BrowserWindow(Vector<URL::URL> const& initial_urls, IsPopupWindow
     m_tabs_container->setCornerWidget(m_new_tab_button_toolbar, Qt::TopRightCorner);
 
     setCentralWidget(m_tabs_container);
+
+    if (m_is_popup_window == IsPopupWindow::No) {
+        m_ai_chat_dock = new QDockWidget("AI Chat", this);
+        m_ai_chat_dock->setObjectName("LadybirdAIChatDock");
+        m_ai_chat_dock->setAllowedAreas(Qt::RightDockWidgetArea);
+        m_ai_chat_dock->setFeatures(QDockWidget::DockWidgetClosable | QDockWidget::DockWidgetMovable);
+        m_ai_chat_dock->setMinimumWidth(320);
+
+        m_ai_chat_widget = new AIChatWidget(*this, m_ai_chat_dock);
+        m_ai_chat_dock->setWidget(m_ai_chat_widget);
+        addDockWidget(Qt::RightDockWidgetArea, m_ai_chat_dock);
+
+        connect(m_toggle_ai_chat_action, &QAction::toggled, m_ai_chat_dock, &QDockWidget::setVisible);
+        connect(m_ai_chat_dock, &QDockWidget::visibilityChanged, m_toggle_ai_chat_action, &QAction::setChecked);
+    } else if (m_toggle_ai_chat_action) {
+        m_toggle_ai_chat_action->setVisible(false);
+    }
+
     setContextMenuPolicy(Qt::PreventContextMenu);
 
     if (browser_options.devtools_port.has_value())

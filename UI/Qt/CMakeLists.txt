@@ -1,5 +1,6 @@
 qt_add_executable(ladybird main.cpp)
 target_sources(ladybird PRIVATE
+    AIChatWidget.cpp
     Application.cpp
     Autocomplete.cpp
     BrowserWindow.cpp
@@ -17,7 +18,7 @@ target_sources(ladybird PRIVATE
     WebContentView.cpp
     ladybird.qrc
 )
-target_link_libraries(ladybird PRIVATE Qt::Core Qt::Gui Qt::Widgets)
+target_link_libraries(ladybird PRIVATE LibHTTP Qt::Core Qt::Gui Qt::Widgets)
 create_ladybird_bundle(ladybird)
 
 if (WIN32)
