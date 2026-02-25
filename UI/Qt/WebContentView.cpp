@@ -27,6 +27,7 @@
 #include <LibWebView/WebContentClient.h>
 #include <UI/Qt/Application.h>
 #include <UI/Qt/StringUtils.h>
+#include <UI/Qt/Tab.h>
 #include <UI/Qt/WebContentView.h>
 
 #include <QApplication>
@@ -926,6 +927,25 @@ void WebContentView::finish_handling_key_event(Web::KeyEvent const& key_event)
 {
     auto& browser_data = as<KeyData>(*key_event.browser_data);
     auto& event = *browser_data.event;
+
+    if (key_event.type == Web::KeyEvent::Type::KeyDown) {
+        auto modifiers = event.modifiers();
+        auto code_point = event.text().isEmpty() ? 0u : event.text()[0].unicode();
+        bool no_modifiers = (modifiers == Qt::NoModifier || modifiers == Qt::ShiftModifier);
+
+        if (no_modifiers) {
+            if (code_point == 'o') {
+                if (auto* tab = qobject_cast<Tab*>(parent()))
+                    tab->focus_location_editor();
+                return;
+            }
+            if (code_point == '/') {
+                if (auto* tab = qobject_cast<Tab*>(parent()))
+                    tab->show_find_in_page();
+                return;
+            }
+        }
+    }
 
     switch (key_event.type) {
     case Web::KeyEvent::Type::KeyDown:

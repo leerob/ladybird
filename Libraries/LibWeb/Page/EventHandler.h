@@ -116,6 +116,8 @@ private:
     OwnPtr<Unicode::Segmenter> m_word_segmenter;
 
     OwnPtr<AutoScrollHandler> m_auto_scroll_handler;
+
+    bool m_vim_awaiting_g { false };
 };
 
 }
