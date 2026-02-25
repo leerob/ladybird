@@ -37,13 +37,12 @@ private:
     struct PendingComputerCall {
         String call_id;
         JsonObject action;
-        Optional<JsonArray> pending_safety_checks;
     };
 
     void submit_prompt();
     void begin_user_turn(String prompt);
     void request_page_context_and_send_prompt(String prompt);
-    void send_responses_request(JsonArray input, Optional<String> previous_response_id);
+    void send_responses_request();
     void finish_turn();
 
     void append_user_message(StringView message);
@@ -79,7 +78,7 @@ private:
 
     String m_openai_api_key;
     URL::URL m_responses_endpoint;
-    Optional<String> m_last_response_id;
+    JsonArray m_conversation_history;
 
     RefPtr<Requests::Request> m_active_request;
     bool m_turn_in_flight { false };
