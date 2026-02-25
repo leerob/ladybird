@@ -137,6 +137,13 @@ static String truncate_for_context(StringView input, size_t max_length)
     return MUST(String::formatted("{}\n\n[...truncated by Ladybird AI chat...]", input.substring_view(0, max_length)));
 }
 
+static void ensure_view_has_focus(WebContentView& view)
+{
+    if (view.hasFocus() && QApplication::focusWidget() == &view)
+        return;
+    view.setFocus(Qt::OtherFocusReason);
+}
+
 }
 
 AIChatWidget::AIChatWidget(BrowserWindow& window, QWidget* parent)
@@ -570,12 +577,13 @@ void AIChatWidget::execute_click(double x, double y, Qt::MouseButton button, boo
     auto* view = current_view();
     if (!view)
         return;
+    ensure_view_has_focus(*view);
 
     auto local = clamp_to_view(x, y);
     auto local_position = QPointF(local);
     auto global_position = QPointF(view->mapToGlobal(local));
 
-    QMouseEvent move_event(QEvent::MouseMove, local_position, global_position, Qt::NoButton, button, Qt::NoModifier);
+    QMouseEvent move_event(QEvent::MouseMove, local_position, global_position, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
     QApplication::sendEvent(view, &move_event);
 
     QMouseEvent press_event(QEvent::MouseButtonPress, local_position, global_position, button, button, Qt::NoModifier);
@@ -595,6 +603,7 @@ void AIChatWidget::execute_scroll(double x, double y, int delta_x, int delta_y)
     auto* view = current_view();
     if (!view)
         return;
+    ensure_view_has_focus(*view);
 
     auto local = clamp_to_view(x, y);
     auto local_position = QPointF(local);
@@ -609,6 +618,7 @@ void AIChatWidget::execute_type_text(StringView text)
     auto* view = current_view();
     if (!view)
         return;
+    ensure_view_has_focus(*view);
 
     auto qt_text = qstring_from_ak_string(text);
     for (auto const& character : qt_text) {
@@ -638,6 +648,7 @@ void AIChatWidget::execute_keypress(JsonObject const& action)
     auto* view = current_view();
     if (!view)
         return;
+    ensure_view_has_focus(*view);
 
     Vector<String> keys;
     if (auto key_array = action.get_array("keys"sv); key_array.has_value()) {
